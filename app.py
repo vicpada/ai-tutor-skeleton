@@ -119,16 +119,14 @@ def generate_completion(query, history, memory):
     logging.info(f"gradio_history: {len(history)} {history}")
 
     # Create agent
-    tools = get_tools(db_collection="azure-architect")
-
-    logging.info(f"Tools: {tools}")
+    tools = get_tools(db_collection="azure-architect")   
 
 
     agent = OpenAIAgent.from_tools(
         llm=Settings.llm,        
         memory=memory,
         tools=tools,
-        system_prompt=QA_TEMPLATE,
+        system_prompt=QA_TEMPLATE
     )
 
     # Generate answer
@@ -136,10 +134,10 @@ def generate_completion(query, history, memory):
     answer_str = ""
     for token in completion.response_gen:
         answer_str += token
-        yield answer_str
+        yield answer_str 
 
-    return answer_str
-
+    logging.info(f"Source count: {len(completion.sources)}")
+    logging.info(f"Sources: {completion.sources}")    
 
 def launch_ui():
     with gr.Blocks(
