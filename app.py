@@ -19,6 +19,7 @@ from llama_index.agent.openai import OpenAIAgent
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from llama_index.core import Settings
+from llama_index.postprocessor.cohere_rerank import CohereRerank
 
 load_dotenv()
 
@@ -26,36 +27,47 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-PROMPT_SYSTEM_MESSAGE = """You are an AI assistant and expert instructor responding to technical questions from software architects and developers who are working on applied AI projects involving Retrieval-Augmented Generation (RAG) in enterprise software architecture. 
-These users are particularly focused on Microsoft technologies and Azure cloud services. Topics they are exploring include architecture patterns in Azure (serverless, microservices, event-driven systems), Azure services comparison (Functions, App Service, AKS, Logic Apps, etc.), DevOps practices (IaC with Bicep/Terraform, CI/CD with Azure DevOps or GitHub Actions), observability with Application Insights, secure design using Key Vault, identity management with Azure AD and B2C, and how to structure and evaluate RAG pipelines using reranking, embeddings, vector databases, and prompt engineering. They are also interested in techniques such as LoRA, fine-tuning, and hybrid retrieval pipelines.
+PROMPT_SYSTEM_MESSAGE = """You are an AI assistant and expert instructor responding to technical questions from software architects and developers who are working in enterprise software architecture. 
+These users are particularly focused on Microsoft technologies and Azure cloud services. Topics they are exploring include architecture patterns in Azure (serverless, microservices, event-driven systems), Azure services comparison (Functions, App Service, AKS, Logic Apps, etc.), DevOps practices (IaC with Bicep/Terraform, CI/CD with Azure DevOps or GitHub Actions), observability with Application Insights, secure design using Key Vault, identity management with Azure AD and B2C.
 You should treat each question as part of this context. Your responses should be complete, accurate, and educational — suitable for technical professionals with intermediate to advanced knowledge in cloud architecture and AI application development. 
-To find relevant information for answering questions, always use the "Azure_AI_Knowledge_Tool". This tool returns technical documentation, architecture guides, official examples, and troubleshooting data focused on Azure and AI integration.
-Only part of the tool’s output may be relevant to the question — discard the irrelevant sections. Your answer should rely **exclusively** on the content provided by the tool. Do **not** inject external or speculative knowledge. If the user refines their question or focuses on a specific sub-topic, reformulate the tool query to capture that specificity and retrieve deeper information.
-Structure your answers in clear sections with multiple paragraphs if needed. If code is returned, include full code blocks in your response (formatted in Markdown) so the user can copy and run them directly.
-If the tool doesn’t return relevant content, inform the user clearly that the topic exceeds the current knowledge base and mention that no relevant documentation was found via the tool.
+To find relevant information for answering questions, always use the "Azure_AI_Knowledge" tool. This tool returns technical documentation, architecture guides, official examples, and troubleshooting data focused on Azure and AI integration.
+Only part of the tool's output may be relevant to the question — discard the irrelevant sections. Your answer should rely **exclusively** on the content provided by the tool. Do **not** inject external or speculative knowledge. If the user refines their question or focuses on a specific sub-topic, reformulate the tool query to capture that specificity and retrieve deeper information.
+If a user requests further elaboration on a specific aspect of a previously discussed topic, you should reformulate your input to the tool to capture this new angle or more profound layer of inquiry. Structure your answers in clear sections with multiple paragraphs if needed. If code is returned, include full code blocks in your response (formatted in Markdown) so the user can copy and run them directly.
+If the tool doesn't return relevant content, inform the user clearly that the topic exceeds the current knowledge base and mention that no relevant documentation was found via the tool.
 Always close your answers by inviting the user to ask follow-up or deeper questions related to the topic.
 """
 
+QA_TEMPLATE = "Answer questions about Azure using 'Azure_AI_Knowledge' tool"
+
+
 def download_knowledge_base_if_not_exists():
     """Download the knowledge base from the Hugging Face Hub if it doesn't exist locally"""
-    if not os.path.exists("data/ai_azure_knowledge"):
-        os.makedirs("data/ai_azure_knowledge")
+    if not os.path.exists("data/azure-architect"):
+        os.makedirs("data/azure-architect")
 
         logging.warning(
             f"Vector database does not exist at 'data/', downloading from Hugging Face Hub..."
         )
         snapshot_download(
-            repo_id="vicpada/AzureVectorDB",
-            local_dir="data/ai_azure_knowledge",
+            repo_id="vicpada/AzureArchitectKnowledge",
+            local_dir="data/azure-architect",            
             repo_type="dataset",
         )
-        logging.info(f"Downloaded vector database to 'data/ai_azure_knowledge'")
+        logging.info(f"Downloaded vector database to 'data/azure-architect'")
 
 
-def get_tools(db_collection="azure-architect"):
+def get_tools(db_collection="azure-architect"):    
     db = chromadb.PersistentClient(path=f"data/{db_collection}")
     chroma_collection = db.get_or_create_collection(db_collection)
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+
+    
+    logging.info(f"Vector store initialized with {chroma_collection.count()} documents.")
+    
+    # Create the vector store index
+    logging.info("Creating vector store index...")
+    
+    # Use the vector store to create an index
 
     index = VectorStoreIndex.from_vector_store(
         vector_store=vector_store,
@@ -63,19 +75,30 @@ def get_tools(db_collection="azure-architect"):
         use_async=True,
         embed_model=Settings.embed_model
     )
+
+    logging.info("Creating vector retriever...")
+    
     vector_retriever = VectorIndexRetriever(
         index=index,
-        similarity_top_k=15,
+        similarity_top_k=400,
         embed_model=Settings.embed_model,
         use_async=True,
+        verbose=True,
     )
+    
+
+    cohere_rerank3 = CohereRerank(top_n=5, model = 'rerank-english-v3.0')
+
+    logging.info("Creating tool...")
+    
     tools = [
         RetrieverTool(
             retriever=vector_retriever,
             metadata=ToolMetadata(
-                name="Azure_Information_related_resources",
-                description="Useful for info related to Azure and microsoft. Best practices, architecture, and other related resources.",
+                name="Azure_AI_Knowledge",
+                description="Useful for info related to Azure and microsoft. Best practices, architecture, and other related resources."                
             ),
+            node_postprocessors=[cohere_rerank3],
         )
     ]
     return tools
@@ -97,11 +120,15 @@ def generate_completion(query, history, memory):
 
     # Create agent
     tools = get_tools(db_collection="azure-architect")
+
+    logging.info(f"Tools: {tools}")
+
+
     agent = OpenAIAgent.from_tools(
-        llm=Settings.llm,
+        llm=Settings.llm,        
         memory=memory,
         tools=tools,
-        system_prompt=PROMPT_SYSTEM_MESSAGE,
+        system_prompt=QA_TEMPLATE,
     )
 
     # Generate answer
@@ -110,6 +137,8 @@ def generate_completion(query, history, memory):
     for token in completion.response_gen:
         answer_str += token
         yield answer_str
+
+    return answer_str
 
 
 def launch_ui():
@@ -146,7 +175,7 @@ if __name__ == "__main__":
     download_knowledge_base_if_not_exists()
 
     # Set up llm and embedding model
-    Settings.llm = OpenAI(temperature=0, model="gpt-4o-mini")
+    Settings.llm = OpenAI(temperature=1, model="gpt-4o-mini")
     Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small")
 
     # launch the UI
