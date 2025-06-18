@@ -20,6 +20,8 @@ from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from llama_index.core import Settings
 from llama_index.postprocessor.cohere_rerank import CohereRerank
+from llama_index.core.embeddings import resolve_embed_model
+from llama_index.embeddings.adapter import AdapterEmbeddingModel
 
 load_dotenv()
 
@@ -49,11 +51,45 @@ def download_knowledge_base_if_not_exists():
             f"Vector database does not exist at 'data/', downloading from Hugging Face Hub..."
         )
         snapshot_download(
-            repo_id="vicpada/AzureArchitectKnowledge",
+            repo_id="vicpada/AzureArchitectKnowledgeFull",
             local_dir="data/azure-architect",            
             repo_type="dataset",
         )
         logging.info(f"Downloaded vector database to 'data/azure-architect'")
+
+def download_embeddings_if_not_exists():
+    """Download the embeddings from the Hugging Face Hub if they don't exist locally"""
+    if not os.path.exists("data/azure-architect-embeddings"):
+        os.makedirs("data/azure-architect-embeddings")
+
+        logging.warning(
+            f"Embeddings do not exist at 'data/', downloading from Hugging Face Hub..."
+        )        
+
+        snapshot_download(repo_id="vicpada/finetuned_embed_model_full", 
+                          repo_type="model", 
+                          local_dir="./data/azure-architect-embeddings")
+        
+        logging.info(f"Downloaded embeddings to 'data/azure-architect-embeddings'")
+
+def load_embed_model():
+    """Load the embedding model from the local directory"""
+
+    embed_model_path = "data/azure-architect-embeddings"
+    if not os.path.exists(embed_model_path):
+        logging.error(f"Embedding model path '{embed_model_path}' does not exist.")
+        return None
+
+    # Load the Base model without fine-tuning
+    base_embed_model = resolve_embed_model("local:BAAI/bge-small-en-v1.5")
+
+    # Load the Fine-tuned model.
+    logging.info(f"Loading embedding model from {embed_model_path}")
+    embed_model = AdapterEmbeddingModel(base_embed_model, embed_model_path,
+                                        model_kwargs={"device": "cuda" if Settings.use_gpu else "cpu"})    
+    
+    return embed_model
+
 
 
 def get_tools(db_collection="azure-architect"):    
@@ -96,7 +132,7 @@ def get_tools(db_collection="azure-architect"):
             retriever=vector_retriever,
             metadata=ToolMetadata(
                 name="Azure_AI_Knowledge",
-                description="Useful for info related to Azure and microsoft. Best practices, architecture, and other related resources."                
+                description="Useful for info related to Azure and microsoft. Best practices, architecture, official documentation, functional use cases and reference architectures and other related resources."                
             ),
             node_postprocessors=[cohere_rerank3],
         )
@@ -172,9 +208,24 @@ if __name__ == "__main__":
     # Download the knowledge base if it doesn't exist
     download_knowledge_base_if_not_exists()
 
+    # Download the embeddings if they don't exist
+    download_embeddings_if_not_exists
+
+    # Set the GPU usage based on the environment variable
+    Settings.use_gpu = os.getenv("USE_GPU", "1") == "1"
+    if Settings.use_gpu:
+        logging.info("Using GPU for inference.")
+    else:
+        logging.info("Using CPU for inference.")        
+
+    # Load the embedding model
+    Settings.embed_model = load_embed_model()
+    if Settings.embed_model is None:
+        logging.error("Embedding model could not be loaded. Exiting.")
+        exit(1)  
+
     # Set up llm and embedding model
-    Settings.llm = OpenAI(temperature=1, model="gpt-4o-mini")
-    Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small")
+    Settings.llm = OpenAI(temperature=1, model="gpt-4o-mini")    
 
     # launch the UI
     launch_ui()
