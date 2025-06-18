@@ -37,6 +37,7 @@ Only part of the tool's output may be relevant to the question — discard the i
 If a user requests further elaboration on a specific aspect of a previously discussed topic, you should reformulate your input to the tool to capture this new angle or more profound layer of inquiry. Structure your answers in clear sections with multiple paragraphs if needed. If code is returned, include full code blocks in your response (formatted in Markdown) so the user can copy and run them directly.
 If the tool doesn't return relevant content, inform the user clearly that the topic exceeds the current knowledge base and mention that no relevant documentation was found via the tool.
 Always close your answers by inviting the user to ask follow-up or deeper questions related to the topic.
+At the end of the answer, include a line to indicate whether the content was sourced using the tool or not, e.g., "Content sourced using Azure_AI_Knowledge tool" or "No relevant content found in Azure_AI_Knowledge tool".
 """
 
 QA_TEMPLATE = "Answer questions about Azure using 'Azure_AI_Knowledge' tool"
@@ -85,11 +86,9 @@ def load_embed_model():
 
     # Load the Fine-tuned model.
     logging.info(f"Loading embedding model from {embed_model_path}")
-    embed_model = AdapterEmbeddingModel(base_embed_model, embed_model_path,
-                                        model_kwargs={"device": "cuda" if Settings.use_gpu else "cpu"})    
+    embed_model = AdapterEmbeddingModel(base_embed_model, embed_model_path)
     
     return embed_model
-
 
 
 def get_tools(db_collection="azure-architect"):    
@@ -116,7 +115,7 @@ def get_tools(db_collection="azure-architect"):
     
     vector_retriever = VectorIndexRetriever(
         index=index,
-        similarity_top_k=400,
+        similarity_top_k=200,
         embed_model=Settings.embed_model,
         use_async=True,
         verbose=True,
@@ -162,7 +161,7 @@ def generate_completion(query, history, memory):
         llm=Settings.llm,        
         memory=memory,
         tools=tools,
-        system_prompt=QA_TEMPLATE
+        system_prompt=PROMPT_SYSTEM_MESSAGE
     )
 
     # Generate answer
@@ -209,7 +208,7 @@ if __name__ == "__main__":
     download_knowledge_base_if_not_exists()
 
     # Download the embeddings if they don't exist
-    download_embeddings_if_not_exists
+    download_embeddings_if_not_exists()
 
     # Set the GPU usage based on the environment variable
     Settings.use_gpu = os.getenv("USE_GPU", "1") == "1"
